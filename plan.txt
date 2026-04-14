@@ -1,0 +1,282 @@
+You are an expert senior full-stack engineer and solution architect. I want you 
+to design and build a complete, production-ready SaaS web application described 
+below. Read every word carefully before writing a single line of code. Ask 
+clarifying questions only if something is truly ambiguous — otherwise make the 
+best architectural decision and document your reasoning inline.
+
+---
+
+## PRODUCT NAME CouchCode
+
+## WHAT THIS IS
+A browser-first cloud couch gaming platform. Users can play retro-era games 
+(PSP, PS2, SNES, GBA class) directly in a browser tab using WebAssembly-based 
+emulation — no downloads, no installs. The unique feature is a multi-device 
+session system: users generate a session code, multiple devices join that session, 
+and each device can act as either a DISPLAY (shows the game) or a CONTROLLER 
+(sends inputs to the game). This replicates a couch gaming / console + controller 
+experience using only browsers and a WiFi network.
+
+---
+
+## CORE SYSTEM ARCHITECTURE — BUILD THIS FIRST
+
+### A. Emulation Engine (highest priority, most complex)
+- Games must run INSIDE the browser tab using WebAssembly.
+- Evaluate and integrate EmulatorJS as the primary emulation layer. It supports 
+  NES, SNES, GBA, PSP, PS2, N64, and more via WebAssembly cores.
+- The emulation must run in a Web Worker or SharedArrayBuffer-backed thread to 
+  avoid blocking the main UI thread.
+- Target performance: 60fps for 16-bit era games, 30fps minimum for PSP/PS2 era 
+  on a mid-range device.
+- Audio must be synchronized using AudioWorklet or Web Audio API.
+- Save states must work and be serializable so they can be stored in the backend.
+- The emulator canvas must be resizable and fullscreen-capable.
+
+### B. Multi-Device Session System (second priority)
+Build a real-time session layer with the following properties:
+
+SESSION CREATION:
+- Any device can create a session and receive a short alphanumeric session code 
+  (e.g., "XKQP7").
+- The creating device is the HOST. The host loads the game and runs the emulator.
+- Other devices JOIN using the session code.
+
+DEVICE ROLES (assigned at join or changeable):
+1. DISPLAY DEVICE —renders the game, does not need to 
+   send controller input.
+2. CONTROLLER DEVICE — does NOT run the emulator. Shows a virtual gamepad UI 
+   on screen. Sends button press/release events in real time to the display 
+   Device.
+3. HOST DEVICE — can be any of the connected device whichever has the best performance 
+
+CONNECTIVITY ARCHITECTURE:
+- Use WebRTC peer-to-peer for controller input when all devices are on the same 
+  local network (detect same-network using ICE candidate analysis or a STUN 
+  check). This minimizes latency to sub-20ms.
+- Fall back to WebSocket relay server (via a lightweight signaling + relay server) 
+  when devices are on different networks.
+- Use a STUN/TURN server setup (can use open STUN servers initially, plan for 
+  self-hosted TURN later).
+- Controller input protocol: binary MessageChannel or a compact JSON event 
+  format: { playerId, button, state, timestamp }
+- Input must be applied to the emulator's input polling loop — not injected as 
+  DOM events.
+
+GAME MODES TO BUILD (in this exact order):
+
+MODE 1 — Single Device Single Player (BUILD FIRST, MVP):
+  - One device, one player.
+  - Game renders on that device.
+  - Input via touch virtual gamepad (mobile) or keyboard mapping (desktop).
+  - This is the MVP. Make it flawless before building other modes.
+
+MODE 2 — Single Device Two Player (PHASE 2):
+  - Two players on one screen.
+  - Horizontal split-screen: top half = Player 1, bottom half = Player 2.
+  - OR shared full screen where both players' inputs are mapped separately.
+  - Only applicable to games that support 2-player input.
+
+MODE 3 — Display Device + Controller Device (PHASE 2):
+  - One device shows the game (TV browser, laptop).
+  - Another device (phone) acts as a wireless controller.
+  - Controller device shows virtual gamepad UI.
+  - Input sent via WebRTC or WebSocket to display device.
+
+MODE 4 — Display Device + Multiple Controller Devices (PHASE 3):
+  - Up to 4 controller devices connected to one display device.
+  - Each controller device is assigned a player slot (P1, P2, P3, P4).
+  - The game running on the display device receives all inputs correctly mapped 
+    to each player slot.
+
+---
+
+## FRONTEND
+
+### Tech Stack
+- Framework: Next.js 14+ (App Router) — SSR for SEO, client components for 
+  game and session UI.
+- Styling: Tailwind CSS + shadcn/ui component library.
+- State: Zustand for client state, React Query for server state.
+- Emulator integration: EmulatorJS loaded dynamically as a client-only component.
+- Virtual Gamepad: Build a custom touch-optimized virtual gamepad component 
+  (D-pad, ABXY buttons, L/R triggers, Start/Select). Must support multi-touch.
+- Animations: Optimized animations for the best resposiveness
+### Key Pages & Views
+1. / — Landing page: hero, feature explainer, demo CTA, game browser preview.
+2. /games — Game library browser with search, filter by system/genre/tags.
+3. /games/[slug] — Game detail page: cover art, description, ratings, 
+   play button, system info.
+4. /play/[gameSlug] — The core play page:
+   - Emulator canvas (full area).
+   - Overlay UI: session code display, player list, settings.
+   - Mode selector (single/split/controller).
+   - Save state controls.
+   - Fullscreen toggle.
+5. /join/[sessionCode] — Join session page: shows game being played, device 
+   role selector, then routes to controller view or spectator view.
+6. /controller — Virtual gamepad full-screen view for controller devices.
+7. /dashboard — Logged-in user dashboard: recent games, save states, favorites, 
+   play history.
+8. /auth — Login, signup, guest play CTA.
+9. /admin — Admin panel (separate section, described below).
+
+---
+
+## BACKEND
+
+### Tech Stack
+- Runtime: Node.js with Bun or use a framework like Hono or Fastify for speed.
+- OR use Next.js API routes + server actions for simpler integration — decide 
+  based on what gives better WebSocket support.
+- Database: PostgreSQL (via Supabase or PlanetScale) for relational data.
+- ORM: Drizzle ORM or Prisma.
+- File Storage: Cloudflare R2 or AWS S3 for ROM files, cover art, save states.
+- Auth: NextAuth.js or Supabase Auth — support email/password, Google OAuth, 
+  and guest sessions (anonymous JWT).
+- Realtime/Signaling: A lightweight WebSocket server for WebRTC signaling and 
+  fallback relay. Can be a separate small service (Node.js + ws library) 
+  deployed on Fly.io or Railway.
+
+### Database Schema (design all tables)
+Design a complete schema including:
+- users (id, email, username, avatar, role, created_at, subscription_tier)
+- guests (session_token, created_at, expires_at)
+- games (id, title, slug, system, genre, tags, rom_path, cover_art_path, 
+  description, release_year, player_count, is_active)
+- game_sessions (id, code, host_user_id, game_id, mode, status, created_at, 
+  ended_at)
+- session_devices (id, session_id, device_token, role, player_slot, joined_at)
+- save_states (id, user_id, game_id, slot_number, state_data_path, 
+  thumbnail_path, created_at)
+- play_history (id, user_id, game_id, session_id, played_at, duration_seconds)
+- favorites (user_id, game_id, created_at)
+- subscriptions (id, user_id, plan, status, start_date, end_date, 
+  stripe_subscription_id)
+- ad_impressions (id, user_id, game_id, ad_unit, timestamp) [for analytics]
+
+---
+
+## MONETIZATION SYSTEM
+Implement the following monetization layers:
+
+1. FREE TIER (Guest or free account):
+   - Access to a curated library of free games.
+   - Ads shown between game loads and on the dashboard (Google AdSense or a 
+     custom ad slot system).
+   - No save states (or 1 save slot only).
+   - Session mode limited to Mode 1 only.
+
+2. PRO SUBSCRIPTION ($X/month — decide a competitive price):
+   - Ad-free experience.
+   - Full game library access.
+   - Unlimited save states.
+   - All session modes (1–4).
+   - Priority matchmaking/session quality.
+   - Implement via Stripe Subscriptions.
+
+3. GAME UNLOCKS (optional IAP):
+   - Certain premium games can be unlocked individually via one-time purchase.
+   - Implement via Stripe Payment Intents.
+
+4. AD SYSTEM:
+   - Integrate Google AdSense OR build a basic ad slot system.
+   - Show ads only to free-tier users.
+   - Track ad impressions in the database.
+
+---
+
+## ADMIN PANEL
+Build a full admin dashboard at /admin (protected by admin role check):
+
+1. USER MANAGEMENT:
+   - Table of all users with search/filter.
+   - View user profile, play history, subscription status.
+   - Ability to ban/unban users, reset passwords, change roles.
+
+2. GAME MANAGEMENT:
+   - Upload new games (ROM file + cover art + metadata form).
+   - Edit game metadata.
+   - Enable/disable games from the library.
+   - View per-game play stats (total plays, avg session duration, active users).
+
+3. ANALYTICS DASHBOARD:
+   - Total users (DAU, MAU).
+   - Active sessions right now.
+   - Revenue (MRR, total revenue, new subscriptions, churn).
+   - Top 10 most played games.
+   - Device type breakdown (mobile vs desktop vs TV).
+   - Session mode usage breakdown.
+   - Ad impression counts and estimated revenue.
+   Use Recharts or Chart.js for all graphs.
+
+4. SESSION MONITOR:
+   - Live view of active game sessions.
+   - Ability to terminate a session.
+
+---
+
+## CROSS-PLATFORM STRATEGY
+Make this decision and implement it:
+- Phase 1: Browser-only PWA. Install prompts on mobile (Add to Home Screen). 
+  This gives iOS/Android app-like experience without app store friction.
+- Phase 2 (document but don't build yet): Native wrappers using Capacitor 
+  (iOS/Android) and Tauri (Windows/Linux/Mac) that wrap the same web app. 
+  This avoids rewriting the codebase.
+- The PWA must have: manifest.json, service worker for asset caching 
+  (NOT game caching — games load on demand), offline-capable shell.
+
+---
+
+## PERFORMANCE REQUIREMENTS
+These are non-negotiable:
+- Emulator must NOT freeze the browser UI thread. Use Web Workers.
+- Controller input round-trip latency target: <20ms on same-network WebRTC, 
+  <80ms on cross-network relay.
+- Game ROM loading: stream from CDN, do not wait for full download before 
+  starting (use chunked loading where emulator core supports it).
+- Core Web Vitals: LCP < 2.5s on the landing and game browser pages.
+- Mobile virtual gamepad: must register multi-touch inputs with zero missed 
+  presses. Test with 4 simultaneous touches.
+
+---
+
+## SECURITY
+- ROM files stored in private cloud storage, served via signed URLs with 
+  expiry (never expose direct S3/R2 links).
+- Rate limit session creation (max 5 sessions/hour per IP).
+- Guest tokens are JWT with 24hr expiry, stored in httpOnly cookies.
+- Admin routes protected by role middleware — never client-side only.
+- Input from controller devices sanitized before being passed to emulator.
+- CORS configured strictly for the production domain.
+
+---
+
+## BUILD ORDER (follow this exactly)
+1. Project scaffold: Next.js + Tailwind + shadcn + Drizzle + Supabase.
+2. Auth system: email/password + Google OAuth + guest sessions.
+3. Database schema: create all tables and run migrations.
+4. Game library: upload system (admin), game browser (public), game detail page.
+5. Emulator integration: EmulatorJS in a client component, Mode 1 only. 
+   Make this work perfectly on desktop and mobile.
+6. Virtual gamepad: touch-optimized, tested on iOS and Android Chrome.
+7. Session system: signaling server, WebRTC P2P, WebSocket fallback.
+8. Mode 2, 3, 4: in order, only after Mode 1 is stable.
+9. Monetization: Stripe integration, subscription gating, ad slots.
+10. Admin panel: all sections.
+11. PWA: manifest, service worker, install prompt.
+12. Performance audit and optimization pass.
+
+---
+
+## OUTPUT FORMAT
+For each step, do the following:
+- State what you are building and why this approach.
+- Write the complete code (no placeholders, no "// TODO" unless explicitly 
+  flagging a phase 2 item).
+- After each major section, summarize what was built and what comes next.
+- If you hit a decision point, make the call, explain it briefly, and move on.
+
+Start with Step 1. Go.
+
+

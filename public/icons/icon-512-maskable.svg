@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <!-- Maskable icon: safe zone is center 80% (approx 410x410), background fills full canvas -->
+  <rect width="512" height="512" fill="#7c3aed"/>
+  <text x="256" y="320" font-family="system-ui, sans-serif" font-size="220" font-weight="bold" text-anchor="middle" fill="white">CC</text>
+</svg>
